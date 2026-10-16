@@ -17,7 +17,12 @@ app.use('/users', userRouter);
 app.use('/messages', messageRouter);
 
 app.use((error, req, res, next)=>{
-  res.status(500).json({ message: error.message, success: false })
+  if(error.isOperational){
+   return res.status(error.statusCode).json({ message: error.message, success: false })
+  }
+
+  return res.status(500).json({ message: 'Internal Server Error', success: false })
+
 })
 
 app.listen(3000, () => {

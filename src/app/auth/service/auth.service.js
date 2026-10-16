@@ -1,23 +1,26 @@
 import * as userRepository from '../../user/repository/user.repository.js';
 import * as OtpRepository from '../../auth/repository/otp.repository.js';
-import bcrypt from 'bcrypt';
-import crypto from 'node:crypto';
 import { sendEmail } from './../../../common/email/nodemailer.js';
-import jwt from "jsonwebtoken";
+import * as authErrors from '../errors.js';
+import * as userErrors from '../../user/errors.js';
+import { hashPassword, comparePassword } from '../utils/bcrypt.utils.js';
+import { generateOtp } from '../utils/crypto.utils.js';
+import { generateToken } from '../utils/jsonwebtoken.utils.js';
+import { verifyGoogleToken } from '../../../common/utils/googel.auth.js';
 export const register = async (userData) => {
 
     const existingUser = await userRepository.checkUserExistsByEmail(userData.email);
 
     if (existingUser) {
-        throw new Error('User already exists');
+        throw userErrors.USER_ALREADY_EXISTS;
     }
 
 
-    userData.password = await bcrypt.hashSync(userData.password, 10);
+    userData.password = await hashPassword(userData.password);
 
     const newUser = await userRepository.createUser(userData);
 
-    const otp = crypto.randomInt(100000, 999999).toString();
+    const otp = generateOtp();
 
 
     await OtpRepository.generateOTP(
@@ -44,21 +47,21 @@ export const verifyAccount = async (email, otp) => {
     const user = await userRepository.checkUserExistsByEmail(email);
 
     if (!user) {
-        throw new Error("User Not Exists");
+        throw userErrors.USER_NOT_EXISTS;
     }
 
     if (user.isVerified === true) {
-        throw new Error("Account already verified");
+        throw authErrors.ACCOUNT_ALREADY_VERIFIED;
     }
 
     const otpData = await OtpRepository.getOTPByEmail(email);
 
     if (!otpData) {
-        throw new Error("OTP expired");
+        throw authErrors.OTP_EXPIRED;
     }
 
     if (otpData.code !== otp) {
-        throw new Error("Invalid OTP");
+        throw authErrors.INVALID_OTP;
     }
 
     const updatedUser = await userRepository.updateUser(email, { isVerified: true });
@@ -71,31 +74,32 @@ export const login = async (email, password) => {
     const user = await userRepository.checkUserExistsByEmail(email);
 
     if (!user) {
-        throw new Error("User Not Exists")
+        throw userErrors.USER_NOT_EXISTS;
     }
 
-    if(user.isVerified === false){
-        throw new Error("Account Not verified")
+    if (user.isVerified === false) {
+        throw authErrors.ACCOUNT_NOT_VERIFIED;
     }
 
-    const isPasswordValid = await bcrypt.compare(password, user.password);
+    const isPasswordValid = await comparePassword(password, user.password);
     if (!isPasswordValid) {
-        throw new Error('Invalid password');
+        throw authErrors.INVALID_PASSWORD;
     }
 
-    const token = jwt.sign({ name:user.name , email : user.email } ,process.env.JWT_SECRET , {expiresIn:"1h"})
+    const token = generateToken({ name: user.name, email: user.email });
 
     return token;
 }
- export const sendOtp = async (email) => {
+
+export const sendOtp = async (email) => {
     const user = await userRepository.checkUserExistsByEmail(email);
     if (!user) {
-        throw new Error("User Not Exists");
+        throw userErrors.USER_NOT_EXISTS;
     }
-    
+
     await OtpRepository.deleteOTPByEmail(email);
-    
-    const otp = crypto.randomInt(100000, 999999).toString();
+
+    const otp = generateOtp();
 
     await OtpRepository.generateOTP(
         {
@@ -111,4 +115,45 @@ export const login = async (email, password) => {
         `Your OTP is: ${otp}`
     );
 
+}
+
+export const resetPassword = async (email, otp, newPassword) => {
+    const user = await userRepository.checkUserExistsByEmail(email);
+    if (!user) {
+        throw userErrors.USER_NOT_EXISTS;
+    }
+
+    const otpData = await OtpRepository.getOTPByEmail(email);
+    if (!otpData) {
+        throw authErrors.OTP_EXPIRED;
+    }
+
+    if (otpData.code !== otp) {
+        throw authErrors.INVALID_OTP;
+    }
+
+    newPassword = await hashPassword(newPassword);
+    const updatedUser = await userRepository.updateUser(email, { password: newPassword });
+    await OtpRepository.deleteOTPByEmail(email);
+
+    return updatedUser;
+}
+
+
+
+export const loginwithgoogle = async (idtoken) => {
+    const googleUser = await verifyGoogleToken(idtoken);
+    const user = await userRepository.checkUserExistsByEmail(googleUser.email);
+    if (!user) {
+        const newUser = await userRepository.createUser({
+            name: googleUser.name,
+            email: googleUser.email,
+            isVerified: true,
+            provider: 'google'
+        });
+        const token = generateToken({ name: newUser.name, email: newUser.email });
+        return token;
+    }
+    const token = generateToken({ name: user.name, email: user.email });
+    return token;
 }
